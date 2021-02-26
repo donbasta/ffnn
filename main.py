@@ -16,11 +16,24 @@ def relu(x):
     return np.maximum(0, x)
 
 
+def relu_derivative(x):
+    return np.where(x <= 0, 0, 1)
+
+
 def linear(x):
     return x
 
 
+def linear_derivative(x):
+    return np.full(x.shape, 1)
+
+
 def softmax(x):
+    ex = np.exp(x)
+    return ex / np.sum(ex)
+
+
+def softmax_derivative(x):
     pass
 
 
