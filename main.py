@@ -118,11 +118,9 @@ class NeuralNetwork:
             f.write(str(n_neuron) + "\n")
             f.write(layer.activation_name + "\n")
             for i in range(n_neuron):
-                for j in layer.W[i]:
-                    f.write(str(j) + " ")
-                f.write("\n")
-
-            f.write(" ".join(list(map(str, layer.b))) + "\n")
+                f.write(" ".join(list(map(str, layer.W[i]))) + "\n")
+            f.write(
+                " ".join(list(map(lambda x: str(x[0]), layer.b))) + "\n")
 
     def forward_propagate(self, x_inputs):
         a = np.array(x_inputs).T
@@ -165,7 +163,7 @@ class NeuralNetwork:
 if __name__ == "__main__":
     model = NeuralNetwork()
 
-    model.load_model("bigbrainmodel.txt")
+    model.load_model("xor-relu-linear.txt")
 
     print(model)
 
