@@ -131,7 +131,7 @@ class NeuralNetwork:
             a = layer.activation(z)
         return a
 
-    def backward_propagate():
+    def backward_propagate(self):
         pass
 
     def fit(self, x_train, y_train, training_iterations):
@@ -163,7 +163,7 @@ class NeuralNetwork:
 if __name__ == "__main__":
     model = NeuralNetwork()
 
-    model.load_model("xor-relu-linear.txt")
+    model.load_model("xor-sigmoid.txt")
 
     print(model)
 
