@@ -1,5 +1,10 @@
+from sklearn.model_selection import KFold
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.datasets import load_iris
 import numpy as np
 import math
+from metrics import Metrics, confusion_matrix
 
 
 def sigmoid(x):
@@ -30,11 +35,22 @@ def linear_derivative(x):
 
 
 def softmax(x):
-    ex = np.exp(x)
-    return ex / np.sum(ex)
+    ret = np.zeros(x.shape)
+    for i in range(x.shape[1]):
+        ex = np.exp(x[:, i])
+        x[:, i] = ex / np.sum(ex)
+    return ret
 
 
 def softmax_derivative(x):
+    ret = np.zeros(x.shape)
+    for i in range(x.shape[1]):
+        j = np.sum(softmax_derivative_util(x[:, i]), axis=1)
+        ret[:, i] = j
+    return ret
+
+
+def softmax_derivative_util(x):
     rx = x.reshape(-1, 1)
     return np.diagflat(rx) - np.dot(rx, rx.T)
 
@@ -44,8 +60,36 @@ def sum_of_squared_error(t, o):
     return 0.5 * np.sum(sub**2)
 
 
-def cross_entropy(pk):
-    return -math.log(pk, base=2)
+def cross_entropy(t, o):
+    ret = 0
+    for i in range(o.shape[1]):
+        j = np.argmax(o[:, i])
+        ct = t[j, i]
+        # ct = clip_scalar(t[j, i])
+        ret += -np.log2(ct)
+    return ret
+
+
+def cross_entropy_derivative(t, o):
+    ret = o
+    for i in range(o.shape[1]):
+        j = np.argmax(o[:, i])
+        ret[j, i] = -(1-ret[j, i])
+    return ret
+
+
+clip_upper_threshold = 5
+clip_lower_threshold = 0.5
+
+
+def clip(x):
+    ret = x
+    norm = np.sum(x * x)
+    if norm > clip_upper_threshold ** 2:
+        ret = ret * (clip_upper_threshold / np.sqrt(norm))
+#     if norm < clip_lower_threshold ** 2:
+#         ret = ret * (clip_lower_threshold / np.sqrt(norm))
+    return ret
 
 
 activation_functions = {
@@ -54,6 +98,14 @@ activation_functions = {
     "sigmoid": sigmoid,
     "softmax": softmax,
     "linear": linear,
+}
+
+activation_functions_derivative = {
+    # activation_functions_derivative
+    "relu": relu_derivative,
+    "sigmoid": sigmoid_derivative,
+    "softmax": softmax_derivative,
+    "linear": linear_derivative
 }
 
 error_functions = {
@@ -65,47 +117,63 @@ error_functions = {
 }
 
 
+class Layer:
+    def __init__(self, activation, input, output):
+        self.activation_name = activation
+        self.activation = activation_functions[activation]
+        self.cost_function = error_functions[activation]
+        self.activation_derivative = activation_functions_derivative[activation]
+        self.W = np.random.randn(output, input)
+        self.b = np.random.randn(output, 1)
+
+        self.reset_delta(output)
+        self.reset_delta_weight()
+        self.reset_delta_bias()
+        self.output = np.zeros(output)
+        self.net = np.zeros(output)
+
+    def set_delta(self, delta):
+        self.delta = delta
+
+    def set_weight(self, weight):
+        self.W = weight
+
+    def set_bias(self, bias):
+        self.b = bias
+
+    def add_delta_weight(self, delta):
+        self.delta_weight += delta
+
+    def add_delta_bias(self, delta_bias):
+        self.delta_bias += delta_bias
+
+    def reset_delta(self, output):
+        self.delta = np.zeros(output)
+
+    def reset_delta_weight(self):
+        self.delta_weight = np.zeros(self.W.shape)
+
+    def reset_delta_bias(self):
+        self.delta_bias = np.zeros(self.b.shape)
+
+    def set_output(self, output):
+        self.output = output
+
+    def set_net(self, net):
+        self.net = net
+
+
 class NeuralNetwork:
-    class Layer:
-        def __init__(self, activation, input, output):
-            self.activation_name = activation
-            self.activation = activation_functions[activation]
-            self.activation_derivative = error_functions[activation]
-            self.W = np.zeros((output, input))
-            self.b = np.zeros((output, 1))
-
-            self.reset_delta()
-            self.reset_delta_bias()
-            self.output = np.zeros(output)
-
-        def set_weight(self, weight):
-            self.W = weight
-
-        def set_bias(self, bias):
-            self.b = bias
-
-        def add_delta(self, delta):
-            self.delta += delta
-
-        def reset_delta(self):
-            self.delta = np.zeros(self.W.shape)
-
-        def add_delta_bias(self, delta_bias):
-            self.delta_bias += delta_bias
-
-        def reset_delta_bias(self):
-            self.delta_bias = np.zeros(self.b.shape)
-
-        def set_output(self, output):
-            self.output = output
-
-    def __init__(self, learning_rate=0.05):
+    def __init__(self, learning_rate=0.05, max_iter=500, error_threshold=0.01, batch_size=5, verbose=False):
         # seeding for random number generation
         np.random.seed(1)
-        # converting weights to a 3 by 1 matrix with values from -1 to 1 and mean of 0
         self.layers = []
         self.depth = 0
         self.learning_rate = learning_rate
+        self.max_iter = max_iter
+        self.batch_size = batch_size
+        self.verbose = verbose
+        self.error_threshold = error_threshold
 
     def add(self, layer):
         self.layers.append(layer)
@@ -119,15 +187,6 @@ class NeuralNetwork:
             layer = self.Layer(a.activation_type,
                                a.previous_neuron, a.current_neuron)
             self.add(layer)
-
-    '''
-    1
-    2
-    sigmoid
-    a11 a12 a13
-    a21 a22 a23
-    b1 b2
-    '''
 
     def load_model(self, filename):
         f = open(filename, "r")
@@ -147,14 +206,11 @@ class NeuralNetwork:
                 if (n_neuron_prev == -1):
                     n_neuron_prev = len(temp)
 
-            layer = self.Layer(activation_type, n_neuron_prev, n_neuron)
+            layer = Layer(activation_type, n_neuron_prev, n_neuron)
             layer.set_weight(np.array(weight))
             bias = np.array(
                 list(map(lambda x: [float(x)],
                          f.readline().split())))
-            # print(bias)
-            # [[-10], [30]]
-            # bias.shape = (2, 1)
             layer.set_bias(bias)
 
             self.layers.append(layer)
@@ -174,49 +230,54 @@ class NeuralNetwork:
     def forward_propagate(self, x_inputs):
         a = np.array(x_inputs).T
         for layer in self.layers:
-            # print("debug", np.dot(layer.W, a), layer.b)
-            # print(layer.W.shape, a.W.shape, layer.b.shape)
             z = np.dot(layer.W, a) + layer.b
+            layer.set_net(z)
             a = layer.activation(z)
             layer.set_output(a)
         return a
 
-    # parameter yang ada -> learning_rate, error_threshold, max_iter, batch_size
-
-    def backward_propagate(self, x_train, y_train, prediction):
-        derivatives = {}
+    def backward_propagate(self, X_train, y_train, prediction):
+        grad = {}
 
         num_layers = len(self.layers)
 
-        # pake sum of squared error dulu biar kebayang, nanti di generalize
-        dA = (prediction - y_train)  # dE/doj
-        # pake sigmoid dulu biar kebayang
-        # dE/dnet_j
-        dZ = dA * self.layers[-1].activation_derivative(prediction)
-        dW = np.dot(dZ, self.layers[-2].output)  # dE/dW
-        db = dZ  # de/db
-        dAPrev = np.dot(dZ, self.layers[-1].output)
-        derivatives["dW" + str(num_layers-1)] = dW
-        derivatives["db" + str(num_layers-1)] = db
+        for i in reversed(range(num_layers)):
+            layer = self.layers[i]
 
-        for i in range(len(self.layers) - 2, 0, -1):
-            dZ = dA * self.layers[i].activation_derivative(dA)
-            dW = np.dot(dZ, dAPrev)
-            db = dZ
-            dAPrev = np.dot(dZ, self.layers[i].output)
-            derivatives["dW" + str(i)] = dW
-            derivatives["db" + str(i)] = db
+            # if output layer
+            if i == num_layers - 1:
+                # use squared error derivative if not softmax
+                if self.layers[-1].activation != 'softmax':
+                    layer.delta = clip((prediction - y_train)
+                                       * layer.activation_derivative(layer.net))
+                else:
+                    layer.delta = cross_entropy_derivative(
+                        prediction, y_train) * layer.activation_derivative(layer.net)
+            else:
+                next_layer = self.layers[i + 1]
+                error = np.dot(next_layer.W.T, next_layer.delta)
+                layer.delta = clip(
+                    error * layer.activation_derivative(layer.net))
 
-        return derivatives
+        for i in range(num_layers):
+            layer = self.layers[i]
+            input_activation = np.atleast_2d(
+                X_train if i == 0 else self.layers[i - 1].output)
+            grad["dW" + str(i)] = clip(np.dot(layer.delta,
+                                              input_activation.T) * self.learning_rate)
+            grad["db" + str(i)] = clip(layer.delta * self.learning_rate)
+
+        return grad
 
     def shuffle(self, x_train, y_train):
         sz = len(y_train)
-        ids = np.random.shuffle([i for i in range(sz)])
+        ids = [i for i in range(sz)]
+        np.random.shuffle(ids)
         ret_x, ret_y = [], []
         for i in ids:
-            ret_x.append(x_train[i])
-            ret_y.append(y_train[i])
-        return ret_x, ret_y
+            ret_x.append(list(x_train[i]))
+            ret_y.append(list(y_train[i]))
+        return (ret_x), (ret_y)
 
     def split_batch(self, x_train, y_train):
         batches_x = []
@@ -224,13 +285,19 @@ class NeuralNetwork:
 
         length = len(x_train)
 
-        for i in range((length // self.batch_size) + 1):
+        for i in range((length // self.batch_size)):
             x_batch = x_train[i * self.batch_size: (i + 1) * self.batch_size]
             y_batch = y_train[i * self.batch_size: (i + 1) * self.batch_size]
-            batches_x.append(x_batch)
-            batches_y.append(y_batch)
+            batches_x.append(np.array(x_batch))
+            batches_y.append(np.array(y_batch))
+        if length % self.batch_size != 0:
+            i = length // self.batch_size
+            x_batch = x_train[i * self.batch_size:]
+            y_batch = y_train[i * self.batch_size:]
+            batches_x.append(np.array(x_batch))
+            batches_y.append(np.array(y_batch))
 
-        return batches_x, batches_y
+        return (batches_x), (batches_y)
 
     def fit(self, x_train, y_train):
         for iteration in range(self.max_iter):
@@ -239,28 +306,36 @@ class NeuralNetwork:
 
             batches_x, batches_y = self.split_batch(x_train, y_train)
 
-            for j, layer in enumerate(self.layers):
-                layer.reset_delta()
-                layer.reset_delta_bias()
-
             cost_function = 0
             for i in range(len(batches_x)):
                 x_input = batches_x[i]
                 y_output = batches_y[i]
+
                 prediction = self.forward_propagate(x_input)
-                cost_function += self.layers[-1].activation_derivative(
-                    prediction, y_output)
+                cost_function += self.layers[-1].cost_function(
+                    prediction, y_output.T)
                 gradients = self.backward_propagate(
-                    x_train, y_train, prediction)
+                    x_input.T, y_output.T, prediction)
+
                 # update delta phase
                 for j, layer in enumerate(self.layers):
-                    layer.add_delta(gradients["dW" + str(j)])
-                    layer.add_delta_bias(gradients["db" + str(j)])
+                    layer.add_delta_weight(gradients["dW" + str(j)])
+                    grad_bias = gradients["db" + str(j)]
+                    layer.add_delta_bias(
+                        np.sum(grad_bias, axis=1).reshape(len(grad_bias), 1))
 
-            # update weights phase
-            for j, layer in enumerate(self.layers):
-                layer.W += layer.delta  # gradients["dW" + str(j)]
-                layer.b += layer.delta_bias  # gradients["db" + str(j)]
+                # update weights phase
+                for j, layer in enumerate(self.layers):
+                    layer.W += layer.delta_weight  # gradients["dW" + str(j)]
+                    layer.b += layer.delta_bias  # gradients["db" + str(j)]
+
+                for j, layer in enumerate(self.layers):
+                    layer.reset_delta_weight()
+                    layer.reset_delta_bias()
+
+            cost_function /= len(x_train)
+            if iteration % 50 == 0:
+                print(f"Iteration {iteration}: ", cost_function)
 
             if cost_function < self.error_threshold:
                 break
@@ -283,19 +358,113 @@ class NeuralNetwork:
         return res
 
 
-if __name__ == "__main__":
-    model = NeuralNetwork()
+enc = OneHotEncoder(handle_unknown='ignore')
 
-    '''model.load_model("xor-sigmoid.txt")
+data = load_iris()
+X = data.data
+y = data.target
+y = y.reshape(-1, 1)
+enc.fit(y)
+y = enc.transform(y).toarray()
 
-    print(model)
 
-    print(model.predict([[0, 0], [0, 1], [1, 0], [1, 1]]))'''
+# train-test-split 90%-10%
 
-    '''model.set_params(learning_rate = 0.05, error_threshold = 0.03, max_iter = 300, batch_size = 5)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.1, random_state=42069)
 
-    model.init_layers([{"activation_type" : "sigmoid", "previous_neuron" : 3, "current_neuron" : 5}, {"activation_type" : "relu", "previous_neuron" : 5, "current_neuron" : 2}])
+# print(X_train.shape)
+# print(X_test.shape)
+# print(y_train.shape)
+# print(y_test.shape)
 
-    model.fit(x_train, y_train)'''
+# create model
+model = NeuralNetwork(learning_rate=0.001, max_iter=2000, verbose=False)
+model.add(Layer("relu", 4, 10))
+model.add(Layer("relu", 10, 10))
+model.add(Layer("linear", 10, 5))
+model.add(Layer("sigmoid", 5, 3))
+model.fit(X_train, y_train)
 
-    model.save_model("out.txt")
+# bikin confusion matrix dan metric dari training ini:
+prediction = model.predict(X_test)
+label_pred = []
+for i in range(prediction.shape[1]):
+    label_pred.append(np.argmax(prediction[:, i]))
+y_test_label = []
+for i in range(y_test.shape[0]):
+    y_test_label.append(np.argmax(y_test[i, :]))
+metrics = Metrics(y_test_label, label_pred)
+print("ACCURACY SLURRR: ", metrics.all_accuracy())
+print("PRECISION SLURRR: ", metrics.all_precision())
+print("RECALL SLURRR: ", metrics.all_recall())
+print("F1 SLURRR: ", metrics.all_f1_score())
+print("CONFUSION MATRIXX: ")
+print(confusion_matrix(y_test_label, label_pred))
+
+print("--------------------------------------")
+
+# 10-fold cross validation
+
+k_fold = KFold(n_splits=10)
+print(k_fold)
+scores = []
+for train_index, test_index in k_fold.split(X):
+    print("TRAIN DATA INDEX")
+    print(train_index)
+    print("TEST DATA INDEX")
+    print(test_index)
+    X_train, X_test = X[train_index], X[test_index]
+    y_train, y_test = y[train_index], y[test_index]
+    model_tmp = NeuralNetwork(
+        learning_rate=0.001, max_iter=1000, verbose=False)
+    model_tmp.add(Layer("relu", 4, 10))
+    model_tmp.add(Layer("relu", 10, 10))
+    model_tmp.add(Layer("linear", 10, 5))
+    model_tmp.add(Layer("sigmoid", 5, 3))
+    model_tmp.fit(X_train, y_train)
+    prediction = model_tmp.predict(X_test)
+    label_pred = []
+    for i in range(prediction.shape[1]):
+        label_pred.append(np.argmax(prediction[:, i]))
+    y_test_label = []
+    for i in range(y_test.shape[0]):
+        y_test_label.append(np.argmax(y_test[i, :]))
+    metrics = Metrics(y_test_label, label_pred)
+    metrics.report()  # gini aja (?)
+
+    # print("ACCURACY SLURRR: ", metrics.accuracy())
+    # print("PRECISION SLURRR: ", metrics.precision())
+    # print("RECALL SLURRR: ", metrics.recall())
+    # print("F1 SLURRR: ", metrics.f1())
+    # print("CONFUSION MATRIXX: ")
+    # print(confusion_matrix(y_test_label, label_pred))
+    # scores.append({
+    #     "accuracy": metrics.accuracy(),
+    #     "precision": metrics.precision(),
+    #     "recall": metrics.recall(),
+    #     "f1": metrics.f1(),
+    #     "confusion_matrix": confusion_matrix(y_test_label, label_pred)
+    # })
+
+# Simpan model
+model_filename = "model.txt"
+model.save_model(model_filename)
+
+# Load model yang baru disimpan
+loaded_model = NeuralNetwork(learning_rate=0.001, max_iter=2000, verbose=False)
+loaded_model.load_model(model_filename)
+
+# Bikin instance data baru, predict pake model yg di-load
+instances = [
+    [6.9, 3.2, 4.7, 1.4],  # versicolor (1)
+    [5.0, 3.5, 1.4, 0.2],  # setosa (0)
+    [6.3, 3.3, 6.0, 2.4],  # virginica (2)
+]
+result = loaded_model.forward_propagate(instances)
+print(list(map(np.argmax, result)))
+
+# Analisis dari 2 hal ini:
+# 2. Lakukan pengujian dengan membandingkan confusion matrix dan perhitungan kinerja dari sklearn.
+# 3. Lakukan pembelajaran FFNN untuk dataset iris dengan skema split train 90% dan test 10%, dan menampilkan kinerja serta confusion matrixnya.
+# berdasarkan hasil yang sudah kami jalankan untuk skema split train 90% dan test 10%, model yang didapatkan sudah cukup akurat dan ini dapat dilihat dari hasil accuracy, precision, recall, dan F1nya. begitu juga confusion matrixnya yang tidak ada persebaran selain di cell yang tepat prediksi dan aslinya.
