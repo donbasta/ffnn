@@ -7,6 +7,10 @@ def confusion_matrix(y_true, y_pred):
         if val not in possible_val:
             possible_val.append(val)
 
+    for val in y_pred:
+        if val not in possible_val:
+            possible_val.append(val)
+
     dic = {}
     possible_val.sort()
     for i in range(len(possible_val)):
@@ -30,6 +34,11 @@ class Metrics:
         for val in y_true:
             if val not in self.labels:
                 self.labels.append(val)
+
+        for val in y_pred:
+            if val not in self.labels:
+                self.labels.append(val)
+
         self.labels.sort()
 
     def get_label_tp_tn_fp_fn(self, label):
@@ -62,21 +71,66 @@ class Metrics:
     # kalo mau accuracy "a" manggil self.accuracy(0)
     def accuracy(self, label):
         tp, tn, fp, fn = self.get_label_tp_tn_fp_fn(label)
+        if(tp + tn == 0):
+            return 0
         return (tp + tn) / (tp + tn + fn + fp)
+
+    def all_accuracy(self):
+        n = len(self.confusion_matrix)
+        tot = 0
+        for i in range(n):
+            tot += self.accuracy(i)
+
+        if(tot == 0):
+            return 0
+        return tot / n
 
     def precision(self, label):
         tp, tn, fp, fn = self.get_label_tp_tn_fp_fn(label)
+        if(tp == 0):
+            return 0
         return tp / (tp + fp)
+
+    def all_precision(self):
+        n = len(self.confusion_matrix)
+        tot = 0
+        for i in range(n):
+            tot += self.precision(i)
+        if(tot == 0):
+            return 0
+        return tot / n
 
     def recall(self, label):
         tp, tn, fp, fn = self.get_label_tp_tn_fp_fn(label)
+        if(tp == 0):
+            return 0
         return tp / (tp + fn)
+
+    def all_recall(self):
+        n = len(self.confusion_matrix)
+        tot = 0
+        for i in range(n):
+            tot += self.recall(i)
+        if(tot == 0):
+            return 0
+        return tot / n
 
     def f1_score(self, label):
         tp, tn, fp, fn = self.get_label_tp_tn_fp_fn(label)
         precision = self.precision(label)
         recall = self.recall(label)
+        if(precision * recall == 0):
+            return 0
         return 2 * precision * recall / (precision + recall)
+
+    def all_f1_score(self):
+        n = len(self.confusion_matrix)
+        tot = 0
+        for i in range(n):
+            tot += self.f1_score(i)
+        if(tot == 0):
+            return 0
+        return tot / n
 
     def report(self, digits=3):
         # accuracy, precision, recall, f1
@@ -90,7 +144,10 @@ class Metrics:
 
         print(prettify(ret, self.labels, [
               "accuracy", "precision", "recall", "f1"]))
-        print(f'overall accuracy: {self.overall_accuracy()}')
+        print(f'overall accuracy: {self.all_accuracy():.3f}')
+        print(f'overall precision: {self.all_precision():.3f}')
+        print(f'overall recall: {self.all_recall():.3f}')
+        print(f'overall f1_score: {self.all_f1_score():.3f}')
 
 
 def prettify(data, index, columns):
